@@ -413,6 +413,9 @@ func (c *Conn) derpWriteChanForRegion(regionID tailcfg.DERPRegionID, peer key.No
 		}
 		return derpMap.Regions[regionID]
 	})
+	if c.derpDialer != nil {
+		dc.SetDialer(c.derpDialer)
+	}
 	dc.HealthTracker = c.health
 	dc.AppName = c.derpAppName
 	if c.extraRootCAs != nil {

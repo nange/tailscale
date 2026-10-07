@@ -33,6 +33,7 @@ import (
 	"tailscale.com/net/dns/resolver"
 	"tailscale.com/net/ipset"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/netx"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/routemanager"
 	"tailscale.com/net/sockstats"
@@ -267,6 +268,11 @@ type Config struct {
 	// WireGuard. The pkt slice is borrowed and must be copied if
 	// the callee needs to retain it.
 	OnDERPRecv func(regionID tailcfg.DERPRegionID, src key.NodePublic, pkt []byte) (handled bool)
+
+	// DERPDialer, if non-nil, is used to establish the TCP connection to
+	// DERP servers instead of the default dialer. It is passed through to
+	// magicsock (see magicsock.Options.DERPDialer).
+	DERPDialer netx.DialFunc
 }
 
 // NewFakeUserspaceEngine returns a new userspace engine for testing.
@@ -442,6 +448,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		PeerByKeyFunc:  e.PeerByKey,
 		ForceDiscoKey:  conf.ForceDiscoKey,
 		OnDERPRecv:     conf.OnDERPRecv,
+		DERPDialer:     conf.DERPDialer,
 	}
 	var err error
 	e.magicConn, err = magicsock.NewConn(magicsockOpts)

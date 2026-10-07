@@ -593,14 +593,29 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	return c.client, c.connGen, nil
 }
 
+// SetDialer sets the dialer used to establish the underlying connection to the
+// DERP server, for both clients created with NewClient (URL mode) and clients
+// created with NewRegionClient (region mode).
+//
+// If unset or nil, the default dialer is used: netns.NewDialer, i.e. a socket
+// that does not route back into Tailscale (and that honors ALL_PROXY).
+//
+// Use cases include connecting to a DERP server over a VPC network (derper mesh
+// mode) and routing the DERP connection through a custom transport.
+func (c *Client) SetDialer(dialer netx.DialFunc) {
+	c.dialer = dialer
+}
+
 // SetURLDialer sets the dialer to use for dialing URLs.
 // This dialer is only use for clients created with NewClient, not NewRegionClient.
 // If unset or nil, the default dialer is used.
 //
+// Deprecated: use SetDialer, which also applies to region clients.
+//
 // The primary use for this is the derper mesh mode to connect to each
 // other over a VPC network.
 func (c *Client) SetURLDialer(dialer netx.DialFunc) {
-	c.dialer = dialer
+	c.SetDialer(dialer)
 }
 
 func (c *Client) dialURL(ctx context.Context) (net.Conn, error) {
@@ -711,6 +726,9 @@ func (c *Client) DialRegionTLS(ctx context.Context, reg *tailcfg.DERPRegion) (tl
 }
 
 func (c *Client) dialContext(ctx context.Context, proto, addr string) (net.Conn, error) {
+	if c.dialer != nil {
+		return c.dialer(ctx, proto, addr)
+	}
 	return netns.NewDialer(c.logf, c.netMon).DialContext(ctx, proto, addr)
 }
 

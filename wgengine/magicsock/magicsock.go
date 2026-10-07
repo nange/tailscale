@@ -41,6 +41,7 @@ import (
 	"tailscale.com/net/neterror"
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
+	"tailscale.com/net/netx"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/ping"
 	"tailscale.com/net/portmapper/portmappertype"
@@ -167,6 +168,7 @@ type Conn struct {
 	idleFunc               func() time.Duration // nil means unknown
 	testOnlyPacketListener nettype.PacketListener
 	onDERPRecv             func(tailcfg.DERPRegionID, key.NodePublic, []byte) bool // or nil, see Options.OnDERPRecv
+	derpDialer             netx.DialFunc                                           // or nil, see Options.DERPDialer
 	netMon                 *netmon.Monitor                                         // must be non-nil
 	health                 *health.Tracker                                         // or nil
 	extraRootCAs           *x509.CertPool                                          // additional trusted root CAs; or nil
@@ -521,6 +523,16 @@ type Options struct {
 	// WireGuard. The pkt slice is borrowed and must be copied if
 	// the callee needs to retain it.
 	OnDERPRecv func(regionID tailcfg.DERPRegionID, src key.NodePublic, pkt []byte) bool
+
+	// DERPDialer, if non-nil, is used to establish the TCP connection to
+	// DERP servers instead of the default netns dialer. It is passed to
+	// every DERP client this Conn creates (see derphttp.Client.SetDialer).
+	//
+	// The primary use is running the DERP connection over a custom
+	// transport, e.g. an embedded relay reached through an application's
+	// own tunnel on platforms where the default dialer cannot be
+	// redirected.
+	DERPDialer netx.DialFunc
 }
 
 func (o *Options) logf() logger.Logf {
@@ -658,6 +670,7 @@ func NewConn(opts Options) (*Conn, error) {
 	c.idleFunc = opts.IdleFunc
 	c.testOnlyPacketListener = opts.TestOnlyPacketListener
 	c.onDERPRecv = opts.OnDERPRecv
+	c.derpDialer = opts.DERPDialer
 
 	// Set up publishers and subscribers. Subscribe calls must return before
 	// NewConn otherwise published events can be missed.

@@ -745,3 +745,72 @@ func TestConnectThroughProxyHonorsDERPPort(t *testing.T) {
 		t.Errorf("proxy CONNECT target = %q, want %q", got, want)
 	}
 }
+
+// TestRegionClientUsesInjectedDialer verifies that SetDialer applies to region
+// clients (NewRegionClient) too, not only to URL clients: the injected dialer
+// is what lets a caller run the DERP connection over its own transport (for
+// example an embedded relay reached through an application tunnel).
+func TestRegionClientUsesInjectedDialer(t *testing.T) {
+	serverKey := key.NewNode()
+	s := derpserver.New(serverKey, t.Logf)
+	defer s.Close()
+
+	// Real DERP server on TLS, ephemeral loopback port.
+	srv := httptest.NewUnstartedServer(derpserver.Handler(s))
+	srv.StartTLS()
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parsing derp port %q: %v", u.Port(), err)
+	}
+
+	region := &tailcfg.DERPRegion{
+		RegionID:   1,
+		RegionCode: "test",
+		RegionName: "test",
+		Nodes: []*tailcfg.DERPNode{{
+			Name:             "test",
+			RegionID:         1,
+			HostName:         u.Hostname(),
+			DERPPort:         port,
+			InsecureForTests: true,
+		}},
+	}
+	c := derphttp.NewRegionClient(key.NewNode(), t.Logf, netmon.NewStatic(),
+		func() *tailcfg.DERPRegion { return region })
+	defer c.Close()
+
+	var (
+		mu     sync.Mutex
+		dialed []string
+	)
+	c.SetDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		mu.Lock()
+		dialed = append(dialed, addr)
+		mu.Unlock()
+		// A real dial of the address the region advertises: the session below
+		// therefore only comes up if the injected dialer was used.
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if got := c.ServerPublicKey(); got != serverKey.Public() {
+		t.Fatalf("ServerPublicKey = %v, want %v", got, serverKey.Public())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
+	if !slices.Contains(dialed, want) {
+		t.Fatalf("dialer calls = %v, want one for the region's node address %q", dialed, want)
+	}
+}
