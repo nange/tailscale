@@ -3695,6 +3695,30 @@ func (c *Conn) listenPacket(network string, port uint16) (nettype.PacketConn, er
 	return nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf, c.netMon)).ListenPacket(ctx, network, addr)
 }
 
+// installBlockedConnLocked replaces ruc's conn with one whose reads block until
+// it is closed (see blockForeverConn), closing the conn it replaces.
+// The caller must hold ruc.mu.
+//
+// The new conn is installed before the old one is closed on purpose: a receive
+// func parked inside the old conn's ReadFromUDPAddrPort wakes up when that conn
+// is closed and then re-reads ruc's current conn (see
+// RebindingUDPConn.readFromWithInitPconn), so the replacement has to be in
+// place by then. Closing the replaced conn is what the UDP bind path below gets
+// for free from ruc.closeLocked; skipping it strands the parked reader in a
+// conn that nothing will ever close, which in turn makes wireguard-go's
+// Device.Close block in netc.stopping.Wait() and hangs every caller of
+// Server.Close/Client.Close.
+func (c *Conn) installBlockedConnLocked(ruc *RebindingUDPConn, network string) {
+	old := ruc.pconn
+	ruc.setConnLocked(newBlockForeverConn(), "", c.controlKnobs)
+	if old == nil {
+		return
+	}
+	if err := old.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		c.logf("magicsock: bindSocket %v: close replaced conn: %v", network, err)
+	}
+}
+
 // bindSocket binds a UDP socket to ruc.
 // Network indicates the UDP socket type; it must be "udp4" or "udp6".
 // If ruc had an existing UDP socket bound, it closes that socket.
@@ -3712,13 +3736,13 @@ func (c *Conn) bindSocket(ruc *RebindingUDPConn, network string, curPortFate cur
 	defer ruc.mu.Unlock()
 
 	if runtime.GOOS == "js" {
-		ruc.setConnLocked(newBlockForeverConn(), "", c.controlKnobs)
+		c.installBlockedConnLocked(ruc, network)
 		return nil
 	}
 
 	if debugAlwaysDERP() {
 		c.logf("disabled %v per TS_DEBUG_ALWAYS_USE_DERP", network)
-		ruc.setConnLocked(newBlockForeverConn(), "", c.controlKnobs)
+		c.installBlockedConnLocked(ruc, network)
 		return nil
 	}
 
